@@ -1,0 +1,182 @@
+#https://docs.cloudscripting.com/8.1.1/creating-manifest/
+
+jpsType: install
+jpsVersion: "1.0"
+id: laravel-nginx-mariadb-radis
+name: Laravel nGINX MariaDB Radis
+homepage: https://laravel.com/
+logo: https://laravel.com/img/logomark.min.svg
+ssl: true
+categories:
+  - apps/dev-and-admin-tools
+description:
+  text: Laravel is an open-source, powerful and versatile PHP web framework with scalability, good built-in caching mechanism and high development speed.
+
+settings:
+  fields:
+    - hideLabel: true
+      hidden: true
+      type: string
+      required: true
+      caption: Git Repo
+      name: gitrepo
+      inputType: string
+      regex: https?:\/\/(www\.)?[a-zA-Z0-9-]+\.[a-zA-Z]{2,}([^\s]*)?
+      vtype: URL
+      vtypeText: "public git repo"
+      default: https://github.com/laravel/laravel/archive/v11.6.1.zip
+
+globals:
+  PASSWD: ${fn.password(16)}
+  MYSQLPASSWD: ${nodes.sqldb.master.password}
+  MYSQLUSER: ${nodes.sqldb.master.user}
+  MYSQLDATABASE: laravel
+  REDISPASSWD: ${fn.password(16)}
+
+nodes:
+  - cloudlets: 8
+    nodeType: nginxphp
+    nodeGroup: cp
+  - cloudlets: 8
+    nodeType: mariadb10
+    nodeGroup: sqldb
+  - cloudlets: 4
+    nodeType: redis
+    nodeGroup: cache
+
+onInstall:
+  - deploy:
+      name: Laravel-latest
+      context: ROOT
+      archive: ${settings.gitrepo} # https://github.com/laravel/laravel/archive/v11.6.1.zip
+      nodeGroup: cp
+      nodeType: nginxphp
+  - appendFile:
+      nodeGroup: cp
+      nodeType: nginxphp
+      path: /etc/nginx/conf.d/sites-enabled/default.conf
+      body: |
+        location = /db {
+            return 301 ${nodes.sqldb.master.url};
+        }
+        location = /db/ {
+            return 301 ${nodes.sqldb.master.url};
+        }
+
+        location ^~ /db/ {
+            return 301 ${nodes.sqldb.master.url};
+        }
+
+  - replaceInFile:
+      - nodeGroup: cp
+        nodeType: nginxphp
+        path: /var/www/webroot/ROOT/.env.example
+        replacements:
+          - replacement: "DB_CONNECTION=mysql"
+            pattern: "DB_CONNECTION=.*"
+          - replacement: "DB_HOST=${nodes.sqldb.master.intIP}"
+            pattern: ".*DB_HOST=.*"
+          - replacement: "DB_PORT=3306"
+            pattern: ".*DB_PORT=.*"
+          - replacement: "DB_DATABASE=laravel"
+            pattern: ".*DB_DATABASE=.*"
+          - replacement: "DB_USERNAME=root"
+            pattern: ".*DB_USERNAME=.*"
+          - replacement: "DB_PASSWORD=${nodes.sqldb.master.password}"
+            pattern: ".*DB_PASSWORD=.*"
+
+          - replacement: "APP_ENV=production"
+            pattern: "APP_ENV=.*"
+          - replacement: "APP_DEBUG=false"
+            pattern: "APP_DEBUG=.*"
+          - replacement: "APP_URL=${env.protocol}://${env.domain}/"
+            pattern: "APP_URL=http://localhost"
+          - replacement: "LOG_CHANNEL=daily"
+            pattern: "LOG_CHANNEL=.*"
+
+          - replacement: "CACHE_DRIVER=redis"
+            pattern: "CACHE_DRIVER=file"
+          - replacement: "SESSION_DRIVER=redis"
+            pattern: "SESSION_DRIVER=file"
+          - replacement: "REDIS_HOST=${nodes.cache.master.intIP}"
+            pattern: "REDIS_HOST=127.0.0.1"
+          - replacement: "REDIS_PASSWORD=${globals.REDISPASSWD}"
+            pattern: "REDIS_PASSWORD=null"
+      - path: /etc/nginx/conf.d/sites-enabled/default.conf
+        nodeGroup: cp
+        nodeType: nginxphp
+        replacements:
+          - replacement: "root   /var/www/webroot/ROOT/public;\n    try_files $uri /index.php$is_args$args;\n"
+            pattern: "root   /var/www/webroot/ROOT;"
+      - path: /etc/php.ini
+        nodeGroup: cp
+        nodeType: nginxphp
+        replacements:
+          - replacement: "extension=gd.so"
+            pattern: ";extension=gd.so"
+          - replacement: "extension=redis.so"
+            pattern: ";extension=redis.so"
+          - replacement: "extension=intl.so"
+            pattern: ";extension=intl.so"
+  - prepareSqlDatabase:
+      - nodeType: mariadb10
+        loginCredentials:
+          user: root
+          password: ${nodes.sqldb.master.password}
+        newDatabaseName: ${globals.MYSQLDATABASE}
+  # - cmd[cp]:
+  #   # Grant nginx user passwordless sudo privileges
+  #   echo "nginx ALL=(ALL) NOPASSWD: ALL" | sudo tee -a /etc/sudoers
+
+  # - cmd[cp]:
+  #     Install Composer
+  #     curl -sS https://getcomposer.org/installer -o /tmp/composer-setup.php;
+  #     php /tmp/composer-setup.php --install-dir=/usr/local/bin --filename=composer;
+
+  # - cmd[cp]:
+  #     # Install Node
+  #     # curl -fsSL https://deb.nodesource.com/setup_20.x | sudo bash -;
+  #     sudo dnf update -y;
+  #     /bin/bash -c "$(curl -fsSL https://deb.nodesource.com/setup_20.x)"
+  #     sudo dnf install -y nodejs;
+
+  # - cmd[cp]:
+  #     # Install redis
+  #     sudo dnf update y;
+  #     sudo dnf install -y php-pear php-dev;
+  #     # pecl install redis;
+  #     # echo "extension=redis.so" >> /etc/php.ini;
+
+  # - cmd[cp]:
+  #     # Install supervisor
+  #     sudo dnf install -y supervisor;
+  #     sudo echo "[program:laravel-queue]\ncommand=/usr/bin/php /var/www/webroot/ROOT/artisan queue:work --tries=3\nautostart=true\nautorestart=true\nredirect_stderr=true\nstdout_logfile=/var/log/laravel-queue.log" > /etc/supervisor/conf.d/laravel-queue.conf;
+  #     sudo supervisorctl reread;
+  #     sudo supervisorctl update;
+  #     sudo supervisorctl start laravel-queue;
+
+  - cmd[cp]:
+      # project command
+      export EDITOR=nano;
+
+      cd /var/www/webroot/ROOT;
+      cp /var/www/webroot/ROOT/.env.example /var/www/webroot/ROOT/.env;
+      composer install --no-dev --optimize-autoloader --working-dir=/var/www/webroot/ROOT;
+      /usr/bin/php /var/www/webroot/ROOT/artisan key:generate;
+      /usr/bin/php /var/www/webroot/ROOT/artisan migrate --force;
+      /usr/bin/php /var/www/webroot/ROOT/artisan storage:link;
+      chmod 777 -R /var/www/webroot/ROOT/storage/;
+      chmod 777 -R /var/www/webroot/ROOT/bootstrap/cache;
+
+      # ln -s /var/www/wwwroot/ROOT/storage/logs/ /var/log/laravel;
+
+      # npm install --prefix /var/www/webroot/ROOT;
+      # npm run build --prefix /var/www/webroot/ROOT;
+  - restartNode:
+      nodeType: nginxphp
+success: |
+  ### Your Laravel Application has been successfully integrated!
+
+  Open your target environment URL **[${env.protocol}://${env.domain}](${env.protocol}://${env.domain}/)** to access your application.
+
+  Thank you for choosing CloudJiffy!
